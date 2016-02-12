@@ -11,6 +11,7 @@ from teuthology import misc as teuthology
 from teuthology import contextutil
 from tasks import rbd
 from teuthology.orchestra import run
+from teuthology.task import ansible
 
 log = logging.getLogger(__name__)
 
@@ -436,10 +437,20 @@ def task(ctx, config):
 
     config = teuthology.replace_all_with_clients(ctx.cluster, config)
 
+    # Install the qemu dependency required for the test using ansible playbook packages.yml
+    hosts = []
+    rpm_deps = ['qemu-kvm', 'genisoimage', 'usbredir']
+    deb_deps = ['qemu-system-x86']
+    for client in config.keys():
+        hosts.append(client)
+    ansible_config = {'playbook': 'packages.yml', 'cleanup': 'true', 'hosts': hosts, 
+                         'vars' : {'yum_packages': rpm_deps, 'apt_packages': deb_deps}}
+
     managers = []
     create_images(ctx=ctx, config=config, managers=managers)
     managers.extend([
         lambda: create_dirs(ctx=ctx, config=config),
+        lambda: ansible.CephLab(ctx,config=ansible_config),
         lambda: generate_iso(ctx=ctx, config=config),
         lambda: download_image(ctx=ctx, config=config),
         ])
