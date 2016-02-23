@@ -393,8 +393,16 @@ def build_ceph_cluster(ctx, config):
         ctx.cluster.run(args=['sudo', 'stop', 'ceph-all', run.Raw('||'),
                               'sudo', 'service', 'ceph', 'stop', run.Raw('||'),
                               'sudo', 'systemctl', 'stop', 'ceph.target'], check_status=False)
-
-        time.sleep(4)
+	# workaround for issue http://tracker.ceph.com/issues/14839     
+	ctx.cluster.run(args=['sudo', 'systemctl', 'stop', 'ceph-mon.target'],
+			check_status=False)
+	ctx.cluster.run(args=['sudo', 'systemctl', 'stop', 'ceph-osd.target'],
+			check_status=False)
+	ctx.cluster.run(args=['sudo', 'systemctl', 'stop', 'ceph-mds.target'],
+			check_status=False)
+	ctx.cluster.run(args=['sudo', 'systemctl', 'stop', 'ceph-radosgw.target'],
+			check_status=False)
+        time.sleep(10)
         # Are you really not running anymore?
         # try first with the init tooling
         # ignoring the status so this becomes informational only
