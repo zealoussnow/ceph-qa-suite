@@ -393,15 +393,15 @@ def build_ceph_cluster(ctx, config):
         ctx.cluster.run(args=['sudo', 'stop', 'ceph-all', run.Raw('||'),
                               'sudo', 'service', 'ceph', 'stop', run.Raw('||'),
                               'sudo', 'systemctl', 'stop', 'ceph.target'], check_status=False)
-	# workaround for issue http://tracker.ceph.com/issues/14839     
-	ctx.cluster.run(args=['sudo', 'systemctl', 'stop', 'ceph-mon.target'],
-			check_status=False)
-	ctx.cluster.run(args=['sudo', 'systemctl', 'stop', 'ceph-osd.target'],
-			check_status=False)
-	ctx.cluster.run(args=['sudo', 'systemctl', 'stop', 'ceph-mds.target'],
-			check_status=False)
-	ctx.cluster.run(args=['sudo', 'systemctl', 'stop', 'ceph-radosgw.target'],
-			check_status=False)
+        # workaround for issue http://tracker.ceph.com/issues/14839
+        ctx.cluster.run(args=['sudo', 'systemctl', 'stop', 'ceph-mon.target'],
+                        check_status=False)
+        ctx.cluster.run(args=['sudo', 'systemctl', 'stop', 'ceph-osd.target'],
+                        check_status=False)
+        ctx.cluster.run(args=['sudo', 'systemctl', 'stop', 'ceph-mds.target'],
+                        check_status=False)
+        ctx.cluster.run(args=['sudo', 'systemctl', 'stop', 'ceph-radosgw.target'],
+                        check_status=False)
         time.sleep(10)
         # Are you really not running anymore?
         # try first with the init tooling
@@ -430,7 +430,7 @@ def build_ceph_cluster(ctx, config):
                         match=match.rstrip('\n'),
                         )
                     break
-    
+
         if ctx.archive is not None:
             # archive mon data, too
             log.info('Archiving mon data...')
@@ -487,6 +487,7 @@ def build_ceph_cluster(ctx, config):
         log.info('Purging data...')
         execute_ceph_deploy(purgedata_nodes)
 
+
 def first_in_ceph_log(remote, pattern, excludes):
     """
     Find the first occurence of the pattern specified in the Ceph log,
@@ -495,7 +496,7 @@ def first_in_ceph_log(remote, pattern, excludes):
     :param pattern: Pattern scanned for.
     :param excludes: Patterns to ignore.
     :return: First line of text (or None if not found)
-    """  
+    """
     args = [
         'sudo',
         'egrep', pattern,
@@ -515,6 +516,7 @@ def first_in_ceph_log(remote, pattern, excludes):
         return stdout
     return None
 
+
 @contextlib.contextmanager
 def cli_test(ctx, config):
     """
@@ -533,7 +535,7 @@ def cli_test(ctx, config):
         """Either use git path or repo path """
         args = ['cd', conf_dir, run.Raw(';')]
         if path:
-            args.append('{path}/ceph-deploy/ceph-deploy'.format(path=path));
+            args.append('{path}/ceph-deploy/ceph-deploy'.format(path=path))
         else:
             args.append('ceph-deploy')
         args.append(run.Raw(cmd))
@@ -611,10 +613,10 @@ def cli_test(ctx, config):
     log.info("Waiting for cluster to become healthy")
     with contextutil.safe_while(sleep=10, tries=6,
                                 action='check health') as proceed:
-       while proceed():
-           r = remote.run(args=['sudo', 'ceph', 'health'], stdout=StringIO())
-           if (out.split(None,1)[0] == 'HEALTH_OK'):
-               break
+        while proceed():
+            r = remote.run(args=['sudo', 'ceph', 'health'], stdout=StringIO())
+            if (out.split(None, 1)[0] == 'HEALTH_OK'):
+                break
     rgw_install = 'install {branch} --rgw {node}'.format(
         branch=test_branch,
         node=nodename,
@@ -650,7 +652,6 @@ def cli_test(ctx, config):
             admin.run(args=['sudo', 'yum', 'remove', 'ceph-deploy', '-y'])
 
 
-        
 def get_all_pg_info(rem_site, testdir):
     """
     Get the results of a ceph pg dump
@@ -664,6 +665,7 @@ def get_all_pg_info(rem_site, testdir):
         '--format', 'json'], stdout=StringIO())
     all_info = json.loads(info.stdout.getvalue())
     return all_info['pg_stats']
+
 
 def osd_scrub_pgs(ctx, config):
     """
@@ -794,7 +796,7 @@ def task(ctx, config):
         - ceph-deploy:
              branch:
                 dev: master
-             fs: xfs|btrfs|ext4 
+             fs: xfs|btrfs|ext4
              # default xfs
              conf:
                 mon:
