@@ -323,20 +323,26 @@ def build_ceph_cluster(ctx, config):
         for d in node_dev_list:
             node = d[0]
             for disk in d[1:]:
+                if 'nvme' in disk:
+                    continue
                 zap = './ceph-deploy disk zap ' + node + ':' + disk
                 estatus = execute_ceph_deploy(zap)
                 if estatus != 0:
                     raise RuntimeError("ceph-deploy: Failed to zap osds")
             osd_create_cmd = './ceph-deploy osd create '
+            osd_activate_cmd = './ceph-deploy osd activate '
             if config.get('dmcrypt') is not None:
                 osd_create_cmd += '--dmcrypt '
             osd_create_cmd += ":".join(d)
+            osd_activate_cmd += ":".join(d)
             estatus_osd = execute_ceph_deploy(osd_create_cmd)
             if estatus_osd == 0:
                 log.info('successfully created osd')
                 no_of_osds += 1
             else:
                 raise RuntimeError("ceph-deploy: Failed to create osds")
+            if 'nvme' in d[1]:
+                execute_ceph_deploy(osd_activate_cmd)
 
         if config.get('wait-for-healthy', True) and no_of_osds >= 2:
             is_healthy(ctx=ctx, config=None)
