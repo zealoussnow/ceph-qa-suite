@@ -24,11 +24,41 @@ def download_ceph_deploy(ctx, config):
     """
     Downloads ceph-deploy from the ceph.com git mirror and (by default)
     switches to the master branch. If the `ceph-deploy-branch` is specified, it
-    will use that instead.
+    will use that instead. The `bootstrap` script is ran, with the argument
+    obtained from `python_version`, if specified.
     """
+    ceph_admin = ctx.cluster.only(teuthology.get_first_mon(ctx, config))
+
+    try:
+        py_ver = str(config['python_version'])
+    except KeyError:
+        pass
+    else:
+        supported_versions = ['2', '3']
+        if py_ver not in supported_versions:
+            raise ValueError("python_version must be: {}, not {}".format(
+                ' or '.join(supported_versions), py_ver
+            ))
+
+        log.info("Installing Python")
+        for admin in ceph_admin.remotes:
+            system_type = teuthology.get_system_type(admin)
+
+        if system_type == 'rpm':
+            package = 'python34' if py_ver == '3' else 'python'
+            ctx.cluster.run(args=[
+                'sudo', 'yum', '-y', 'install',
+                package, 'python-virtualenv'
+            ])
+        else:
+            package = 'python3' if py_ver == '3' else 'python'
+            ctx.cluster.run(args=[
+                'sudo', 'apt-get', '-y', '--force-yes', 'install',
+                package, 'python-virtualenv'
+            ])
+
     log.info('Downloading ceph-deploy...')
     testdir = teuthology.get_testdir(ctx)
-    ceph_admin = ctx.cluster.only(teuthology.get_first_mon(ctx, config))
     ceph_deploy_branch = config.get('ceph-deploy-branch', 'master')
 
     ceph_admin.run(
@@ -38,14 +68,17 @@ def download_ceph_deploy(ctx, config):
             '{tdir}/ceph-deploy'.format(tdir=testdir),
         ],
     )
-    ceph_admin.run(
-        args=[
-            'cd',
-            '{tdir}/ceph-deploy'.format(tdir=testdir),
-            run.Raw('&&'),
-            './bootstrap',
-        ],
-    )
+    args = [
+        'cd',
+        '{tdir}/ceph-deploy'.format(tdir=testdir),
+        run.Raw('&&'),
+        './bootstrap',
+    ]
+    try:
+        args.append(str(config['python_version']))
+    except KeyError:
+        pass
+    ceph_admin.run(args=args)
 
     try:
         yield
@@ -239,14 +272,19 @@ def build_ceph_cluster(ctx, config):
                         ceph_admin, conf_path, lines, sudo=True)
 
         # install ceph
-        install_nodes = './ceph-deploy install ' + \
-            (ceph_branch if ceph_branch else "--dev=master") + " " + all_nodes
+        ceph_sha = ctx.config['sha1']
+        devcommit = '--dev-commit={sha}'.format(sha=ceph_sha)
+        if ceph_branch:
+            option = ceph_branch
+        else:
+            option = devcommit
+        install_nodes = './ceph-deploy install ' + option + " " + all_nodes
         estatus_install = execute_ceph_deploy(install_nodes)
         if estatus_install != 0:
             raise RuntimeError("ceph-deploy: Failed to install ceph")
         # install ceph-test package too
-        install_nodes2 = './ceph-deploy install --tests ' + \
-            (ceph_branch if ceph_branch else "--dev=master") + " " + all_nodes
+        install_nodes2 = './ceph-deploy install --tests ' + option + \
+                         " " + all_nodes
         estatus_install = execute_ceph_deploy(install_nodes2)
         if estatus_install != 0:
             raise RuntimeError("ceph-deploy: Failed to install ceph-test")
@@ -560,6 +598,7 @@ def cli_test(ctx, config):
                                 action='check health') as proceed:
        while proceed():
            r = remote.run(args=['sudo', 'ceph', 'health'], stdout=StringIO())
+           out = r.stdout.getvalue()
            if (out.split(None,1)[0] == 'HEALTH_OK'):
                break
     rgw_install = 'install {branch} --rgw {node}'.format(

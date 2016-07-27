@@ -215,7 +215,7 @@ class MDSThrasher(Greenlet):
             active_rank = actives[0]['rank']
 
             self.log('kill mds.{id} (rank={r})'.format(id=active_mds, r=active_rank))
-            self.manager.kill_mds_by_rank(active_rank)
+            self.kill_mds_by_rank(active_rank)
 
             # wait for mon to report killed mds as crashed
             last_laggy_since = None
@@ -272,7 +272,7 @@ class MDSThrasher(Greenlet):
             time.sleep(delay)
 
             self.log('reviving mds.{id}'.format(id=active_mds))
-            self.manager.revive_mds(active_mds, standby_for_rank=takeover_rank)
+            self.revive_mds(active_mds, standby_for_rank=takeover_rank)
 
             status = {}
             while True:
@@ -294,7 +294,7 @@ class MDSThrasher(Greenlet):
                     delay = random.randrange(0.0, self.max_replay_thrash_delay)
                 time.sleep(delay)
                 self.log('kill replaying mds.{id}'.format(id=self.to_kill))
-                self.manager.kill_mds(self.to_kill)
+                self.kill_mds(self.to_kill)
 
                 delay = self.max_revive_delay
                 if self.randomize:
@@ -305,7 +305,7 @@ class MDSThrasher(Greenlet):
                 time.sleep(delay)
 
                 self.log('revive mds.{id}'.format(id=self.to_kill))
-                self.manager.revive_mds(self.to_kill)
+                self.revive_mds(self.to_kill)
 
 
 @contextlib.contextmanager
@@ -411,5 +411,6 @@ def task(ctx, config):
         for t in thrashers:
             log.info('join thrasher for failure group [{fg}]'.format(fg=', '.join(failure_group)))
             thrashers[t].stop()
+            thrashers[t].get()  # Raise any exception from _run()
             thrashers[t].join()
         log.info('done joining')

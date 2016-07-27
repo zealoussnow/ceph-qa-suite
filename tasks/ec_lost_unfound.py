@@ -29,10 +29,6 @@ def task(ctx, config):
         logger=log.getChild('ceph_manager'),
         )
 
-    manager.raw_cluster_cmd('tell', 'osd.0', 'flush_pg_stats')
-    manager.raw_cluster_cmd('tell', 'osd.1', 'flush_pg_stats')
-    manager.raw_cluster_cmd('tell', 'osd.2', 'flush_pg_stats')
-    manager.raw_cluster_cmd('tell', 'osd.3', 'flush_pg_stats')
     manager.wait_for_clean()
 
     profile = config.get('erasure_code_profile', {
@@ -42,7 +38,9 @@ def task(ctx, config):
     })
     profile_name = profile.get('name', 'lost_unfound')
     manager.create_erasure_code_profile(profile_name, profile)
-    pool = manager.create_pool_with_unique_name(erasure_code_profile_name=profile_name)
+    pool = manager.create_pool_with_unique_name(
+        erasure_code_profile_name=profile_name,
+        min_size=2)
 
     # something that is always there, readable and never empty
     dummyfile = '/etc/group'
