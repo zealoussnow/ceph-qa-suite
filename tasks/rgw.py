@@ -222,7 +222,7 @@ def ship_apache_configs(ctx, config, role_endpoints, on_client = None,
                 client=client),
             data="""#!/bin/sh
 ulimit -c unlimited
-exec radosgw -f -n {client} -k /etc/ceph/ceph.{client}.keyring {rgw_options}
+exec radosgw -f -n {client} -k /etc/ceph/{client}.keyring {rgw_options}
 
 """.format(tdir=testdir, client=client, rgw_options=" ".join(rgw_options))
             )
@@ -265,13 +265,17 @@ def start_rgw(ctx, config, on_client = None, except_client = None):
     clients_to_run = [on_client]
     if on_client is None:
         clients_to_run = config.keys()
+        log.debug('client %r', clients_to_run)
     testdir = teuthology.get_testdir(ctx)
     for client in clients_to_run:
         if client == except_client:
             continue
         (remote,) = ctx.cluster.only(client).remotes.iterkeys()
+        cluster_name, daemon_type, client_id = teuthology.split_role(client)
+        client_with_id = daemon_type + '.' + client_id
         zone = rgw_utils.zone_for_client(ctx, client)
         log.debug('zone %s', zone)
+
         client_config = config.get(client)
         if client_config is None:
             client_config = {}
@@ -320,8 +324,9 @@ def start_rgw(ctx, config, on_client = None, except_client = None):
             rgw_cmd.extend(['--rgw-zone', zone])
 
         rgw_cmd.extend([
-            '-n', client,
-            '-k', '/etc/ceph/ceph.{client}.keyring'.format(client=client),
+            '-n', client_with_id,
+            '--cluster', cluster_name,
+            '-k', '/etc/ceph/{client}.keyring'.format(client=client),
             '--log-file',
             '/var/log/ceph/rgw.{client}.log'.format(client=client),
             '--rgw_ops_log_socket_path',
@@ -349,6 +354,7 @@ def start_rgw(ctx, config, on_client = None, except_client = None):
 
         ctx.daemons.add_daemon(
             remote, 'rgw', client,
+            cluster=cluster_name,
             args=run_cmd,
             logger=log.getChild(client),
             stdin=run.PIPE,
@@ -465,9 +471,10 @@ def extract_zone_info(ctx, client, client_config):
     :param client_config: dictionary of client configuration information
     :returns: zone extracted from client and client_config information
     """
-    ceph_config = ctx.ceph['ceph'].conf.get('global', {})
-    ceph_config.update(ctx.ceph['ceph'].conf.get('client', {}))
-    ceph_config.update(ctx.ceph['ceph'].conf.get(client, {}))
+    cluster_name, daemon_type, client_id = teuthology.split_role(client)
+    ceph_config = ctx.ceph[cluster_name].conf.get('global', {})
+    ceph_config.update(ctx.ceph[cluster_name].conf.get('client', {}))
+    ceph_config.update(ctx.ceph[cluster_name].conf.get(client, {}))
     for key in ['rgw zone', 'rgw region', 'rgw zone root pool']:
         assert key in ceph_config, \
             'ceph conf must contain {key} for {client}'.format(key=key,
@@ -634,6 +641,7 @@ def configure_users_for_client(ctx, config, client, everywhere=False):
             continue
 
         for client_name in clients_to_create_as:
+            cluster_name, daemon_type, client_id = teuthology.split_role(client_name)
             log.debug('Creating user {user} on {client}'.format(
                 user=user_info['system_key']['user'], client=client_name))
             rgwadmin(ctx, client_name,
@@ -674,6 +682,7 @@ def configure_users(ctx, config,  everywhere=False):
         if everywhere:
             clients_to_create_as = config.keys()
         for client_name in clients_to_create_as:
+            cluster_name, daemon_type, client_id = teuthology.split_role(client_name)
             log.debug('Creating user {user} on {client}'.format(
                       user=user_info['system_key']['user'], client=client))
             rgwadmin(ctx, client_name,
@@ -701,14 +710,16 @@ def create_nonregion_pools(ctx, config, regions):
     for client in config.keys():
         (remote,) = ctx.cluster.only(client).remotes.iterkeys()
         data_pool = '.rgw.buckets'
+        cluster_name, daemon_type, client_id = teuthology.split_role(client)
+
         if ctx.rgw.ec_data_pool:
             create_ec_pool(remote, data_pool, client, 64,
-                           ctx.rgw.erasure_code_profile)
+                           ctx.rgw.erasure_code_profile, cluster_name)
         else:
-            create_replicated_pool(remote, data_pool, 64)
+            create_replicated_pool(remote, data_pool, 64, cluster_name)
         if ctx.rgw.cache_pools:
             create_cache_pool(remote, data_pool, data_pool + '.cache', 64,
-                              64*1024*1024)
+                              64*1024*1024, cluster_name)
     yield
 
 @contextlib.contextmanager
@@ -759,7 +770,8 @@ def configure_multisite_regions_and_zones(ctx, config, regions, role_endpoints, 
     fill_in_endpoints(region_info, role_zones, role_endpoints)
 
     # clear out the old defaults
-    first_mon = teuthology.get_first_mon(ctx, config)
+    cluster_name, daemon_type, client_id = teuthology.split_role(master_client)
+    first_mon = teuthology.get_first_mon(ctx, config, cluster_name)
     (mon,) = ctx.cluster.only(first_mon).remotes.iterkeys()
 
     # read master zonegroup and master_zone
@@ -793,12 +805,12 @@ def configure_multisite_regions_and_zones(ctx, config, regions, role_endpoints, 
         (remote,) = ctx.cluster.only(role).remotes.keys()
         for pool_info in zone_info['placement_pools']:
             remote.run(args=['sudo', 'ceph', 'osd', 'pool', 'create',
-                             pool_info['val']['index_pool'], '64', '64'])
+                             pool_info['val']['index_pool'], '64', '64', '--cluster', cluster_name])
             if ctx.rgw.ec_data_pool:
                 create_ec_pool(remote, pool_info['val']['data_pool'],
-                               zone, 64, ctx.rgw.erasure_code_profile)
+                               zone, 64, ctx.rgw.erasure_code_profile, cluster_name)
             else:
-                create_replicated_pool(remote, pool_info['val']['data_pool'], 64)
+                create_replicated_pool(remote, pool_info['val']['data_pool'], 64, cluster_name)
 
     (zonegroup, zone, zone_info, user_info) = role_zones[master_client]
     zone_json = json.dumps(dict(zone_info.items() + user_info.items()))
@@ -810,11 +822,11 @@ def configure_multisite_regions_and_zones(ctx, config, regions, role_endpoints, 
              check_status=True)
 
     rgwadmin(ctx, master_client,
-             cmd=['-n', master_client, 'zone', 'default', zone],
+             cmd=['zone', 'default', '--rgw-zone', zone],
              check_status=True)
 
     rgwadmin(ctx, master_client,
-             cmd=['-n', master_client, 'period', 'update', '--commit'],
+             cmd=['period', 'update', '--commit'],
              check_status=True)
 
     yield
@@ -844,6 +856,7 @@ def configure_regions_and_zones(ctx, config, regions, role_endpoints, realm):
     log.debug('regions are %r', regions)
     log.debug('role_endpoints = %r', role_endpoints)
     log.debug('realm is %r', realm)
+
     # extract the zone info
     role_zones = dict([(client, extract_zone_info(ctx, client, c_config))
                        for client, c_config in config.iteritems()])
@@ -867,14 +880,16 @@ def configure_regions_and_zones(ctx, config, regions, role_endpoints, realm):
     fill_in_endpoints(region_info, role_zones, role_endpoints)
 
     # clear out the old defaults
-    first_mon = teuthology.get_first_mon(ctx, config)
+    cluster_name, daemon_type, client_id = teuthology.split_role(client)
+    client_with_id = daemon_type + '.' + client_id
+    first_mon = teuthology.get_first_mon(ctx, config, cluster_name)
     (mon,) = ctx.cluster.only(first_mon).remotes.iterkeys()
     # removing these objects from .rgw.root and the per-zone root pools
     # may or may not matter
     rados(ctx, mon,
-          cmd=['-p', '.rgw.root', 'rm', 'region_info.default'])
+          cmd=['-p', '.rgw.root', 'rm', 'region_info.default', '--cluster', cluster_name])
     rados(ctx, mon,
-          cmd=['-p', '.rgw.root', 'rm', 'zone_info.default'])
+          cmd=['-p', '.rgw.root', 'rm', 'zone_info.default', '--cluster', cluster_name])
 
     # read master zonegroup and master_zone
     for zonegroup, zg_info in region_info.iteritems():
@@ -894,7 +909,7 @@ def configure_regions_and_zones(ctx, config, regions, role_endpoints, realm):
     log.debug('master client = %r', master_client)
     log.debug('config %r ', config)
 
-    (ret, out)=rgwadmin(ctx, master_client,
+    (ret, out)=rgwadmin(ctx, client,
                         cmd=['realm', 'create', '--rgw-realm', realm, '--default'])
     log.debug('realm create ret %r exists %r', -ret, errno.EEXIST)
     assert ret == 0 or ret != -errno.EEXIST
@@ -905,22 +920,22 @@ def configure_regions_and_zones(ctx, config, regions, role_endpoints, realm):
         for role, (zonegroup, zone, zone_info, user_info) in role_zones.iteritems():
             rados(ctx, mon,
                   cmd=['-p', zone_info['domain_root'],
-                       'rm', 'region_info.default'])
+                       'rm', 'region_info.default', '--cluster', cluster_name])
             rados(ctx, mon,
                   cmd=['-p', zone_info['domain_root'],
-                       'rm', 'zone_info.default'])
+                       'rm', 'zone_info.default', '--cluster', cluster_name])
 
             (remote,) = ctx.cluster.only(role).remotes.keys()
             for pool_info in zone_info['placement_pools']:
                 remote.run(args=['sudo', 'ceph', 'osd', 'pool', 'create',
-                                 pool_info['val']['index_pool'], '64', '64'])
+                                 pool_info['val']['index_pool'], '64', '64', '--cluster', cluster_name])
                 if ctx.rgw.ec_data_pool:
                     create_ec_pool(remote, pool_info['val']['data_pool'],
-                                   zone, 64, ctx.rgw.erasure_code_profile)
+                                   zone, 64, ctx.rgw.erasure_code_profile, cluster_name)
                 else:
                     create_replicated_pool(
                         remote, pool_info['val']['data_pool'],
-                        64)
+                        64, cluster_name)
             zone_json = json.dumps(dict(zone_info.items() + user_info.items()))
             log.debug('zone info is: %r', zone_json)
             rgwadmin(ctx, client,
@@ -943,11 +958,12 @@ def configure_regions_and_zones(ctx, config, regions, role_endpoints, realm):
 
         (zonegroup, zone, zone_info, user_info) = role_zones[client]
         rgwadmin(ctx, client,
-                 cmd=['zone', 'default', zone],
+                 cmd=['zone', 'default', '--rgw-zone', zone],
                  check_status=True)
 
-    rgwadmin(ctx, master_client,
-             cmd=['-n', master_client, 'period', 'update', '--commit'],
+    #this used to take master_client, need to edit that accordingly
+    rgwadmin(ctx, client,
+             cmd=['period', 'update', '--commit'],
              check_status=True)
 
     yield
@@ -1003,11 +1019,12 @@ def pull_configuration(ctx, config, regions, role_endpoints, realm, master_clien
 
     for client in config.iterkeys():
         if client != master_client:
+            cluster_name, daemon_type, client_id = teuthology.split_role(client)
             host, port = role_endpoints[master_client]
             endpoint = 'http://{host}:{port}/'.format(host=host, port=port)
             log.debug("endpoint: %s", endpoint)
             rgwadmin(ctx, client,
-                cmd=['-n', client, 'realm', 'pull', '--rgw-realm', realm, '--default', '--url',
+                cmd=['realm', 'pull', '--rgw-realm', realm, '--default', '--url',
                      endpoint, '--access_key',
                      user_info['system_key']['access_key'], '--secret',
                      user_info['system_key']['secret_key']],
@@ -1015,11 +1032,19 @@ def pull_configuration(ctx, config, regions, role_endpoints, realm, master_clien
 
             (zonegroup, zone, zone_info, zone_user_info) = role_zones[client]
             zone_json = json.dumps(dict(zone_info.items() + zone_user_info.items()))
-            log.debug("zone info is: %r"), zone_json
+            log.debug("zone info is: %r", zone_json)
             rgwadmin(ctx, client,
-                     cmd=['zone', 'set', '--rgw-zonegroup', zonegroup,
+                     cmd=['zone', 'set', '--default',
                           '--rgw-zone', zone],
                      stdin=StringIO(zone_json),
+                     check_status=True)
+
+            rgwadmin(ctx, client,
+                     cmd=['zonegroup', 'add', '--rgw-zonegroup', zonegroup, '--rgw-zone', zone],
+                     check_status=True)
+
+            rgwadmin(ctx, client,
+                     cmd=['zonegroup', 'default', '--rgw-zonegroup', zonegroup],
                      check_status=True)
 
             rgwadmin(ctx, client,
@@ -1230,6 +1255,7 @@ def task(ctx, config):
         lambda: create_nonregion_pools(
             ctx=ctx, config=config, regions=regions),
         ]
+    log.debug('Nonregion pools created')
 
     multisite = len(regions) > 1
 
@@ -1241,7 +1267,22 @@ def task(ctx, config):
                 break
 
     log.debug('multisite %s', multisite)
-    multi_cluster = multisite and len(ctx.config['roles']) > 1
+
+    multi_cluster = False
+    if multisite:
+        prev_cluster_name = None
+        roles = ctx.config['roles']
+        #check if any roles have a different cluster_name from eachother
+        for lst in roles:
+            for role in lst:
+                cluster_name, daemon_type, client_id = teuthology.split_role(role)
+                if cluster_name != prev_cluster_name and prev_cluster_name != None:
+                    multi_cluster = True
+                    break
+                prev_cluster_name = cluster_name
+            if multi_cluster:
+                break
+
     log.debug('multi_cluster %s', multi_cluster)
     master_client = None
 
