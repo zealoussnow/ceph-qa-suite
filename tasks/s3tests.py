@@ -312,6 +312,7 @@ def sync_users(ctx, config):
     """
     assert isinstance(config, dict)
     # do a full sync if this is a multi-region test
+    #ALI TODO: figure out what to do about multi_region_enabled
     if rgw_utils.multi_region_enabled(ctx):
         log.debug('Doing a full sync')
         rgw_utils.radosgw_agent_sync_all(ctx)
