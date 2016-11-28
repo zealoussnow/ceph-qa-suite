@@ -12,3 +12,8 @@ overrides:
         enable experimental unrecoverable data corrupting features: debug_white_box_testing_ec_overwrites
       client:
         rbd default data pool: datapool
+        debug rbd: 20
+        debug ms: 1
+        debug objecter: 20
+      osd:
+        debug objclass: 20
