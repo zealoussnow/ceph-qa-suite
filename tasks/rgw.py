@@ -6,11 +6,9 @@ import contextlib
 import json
 import logging
 import os
+import time
 import errno
 import util.rgw as rgw_utils
-
-from requests.packages.urllib3 import PoolManager
-from requests.packages.urllib3.util import Retry
 
 from cStringIO import StringIO
 
@@ -18,7 +16,7 @@ from teuthology.orchestra import run
 from teuthology import misc as teuthology
 from teuthology import contextutil
 from teuthology.orchestra.run import CommandFailedError
-from util.rgw import rgwadmin, get_config_master_client
+from util.rgw import rgwadmin, extract_zone_info, extract_region_info, get_config_master_client
 from util.rados import (rados, create_ec_pool,
                                         create_replicated_pool,
                                         create_cache_pool)
@@ -338,17 +336,6 @@ def start_rgw(ctx, config, on_client = None, except_client = None):
             wait=False,
             )
 
-    # XXX: add_daemon() doesn't let us wait until radosgw finishes startup
-    # use a connection pool with retry/backoff to poll each gateway until it starts listening
-    http = PoolManager(retries=Retry(connect=8, backoff_factor=1))
-    for client in clients_to_run:
-        if client == except_client:
-            continue
-        host, port = ctx.rgw.role_endpoints[client]
-        endpoint = 'http://{host}:{port}/'.format(host=host, port=port)
-        log.info('Polling {client} until it starts accepting connections on {endpoint}'.format(client=client, endpoint=endpoint))
-        http.request('GET', endpoint)
-
     try:
         yield
     finally:
@@ -420,7 +407,6 @@ def start_apache(ctx, config, on_client = None, except_client = None):
 
         run.wait(apaches.itervalues())
 
-
 def extract_user_info(client_config):
     """
     Extract user info from the client config specified.  Returns a dict
@@ -440,93 +426,6 @@ def extract_user_info(client_config):
         )
     return user_info
 
-
-def extract_zone_info(ctx, client, client_config):
-    """
-    Get zone information.
-    :param client: dictionary of client information
-    :param client_config: dictionary of client configuration information
-    :returns: zone extracted from client and client_config information
-    """
-    cluster_name, daemon_type, client_id = teuthology.split_role(client)
-    ceph_config = ctx.ceph[cluster_name].conf.get('global', {})
-    ceph_config.update(ctx.ceph[cluster_name].conf.get('client', {}))
-    ceph_config.update(ctx.ceph[cluster_name].conf.get(client, {}))
-    for key in ['rgw zone', 'rgw region', 'rgw zone root pool']:
-        assert key in ceph_config, \
-            'ceph conf must contain {key} for {client}'.format(key=key,
-                                                               client=client)
-    region = ceph_config['rgw region']
-    zone = ceph_config['rgw zone']
-    zone_info = dict()
-    for key in ['rgw control pool', 'rgw gc pool', 'rgw log pool',
-                'rgw intent log pool', 'rgw usage log pool',
-                'rgw user keys pool', 'rgw user email pool',
-                'rgw user swift pool', 'rgw user uid pool',
-                'rgw domain root']:
-        new_key = key.split(' ', 1)[1]
-        new_key = new_key.replace(' ', '_')
-
-        if key in ceph_config:
-            value = ceph_config[key]
-            log.debug('{key} specified in ceph_config ({val})'.format(
-                key=key, val=value))
-            zone_info[new_key] = value
-        else:
-            zone_info[new_key] = '.' + region + '.' + zone + '.' + new_key
-
-    index_pool = '.' + region + '.' + zone + '.' + 'index_pool'
-    data_pool = '.' + region + '.' + zone + '.' + 'data_pool'
-    data_extra_pool = '.' + region + '.' + zone + '.' + 'data_extra_pool'
-
-    zone_info['placement_pools'] = [{'key': 'default_placement',
-                                     'val': {'index_pool': index_pool,
-                                             'data_pool': data_pool,
-                                             'data_extra_pool': data_extra_pool}
-                                     }]
-
-    # these keys are meant for the zones argument in the region info.  We
-    # insert them into zone_info with a different format and then remove them
-    # in the fill_in_endpoints() method
-    for key in ['rgw log meta', 'rgw log data']:
-        if key in ceph_config:
-            zone_info[key] = ceph_config[key]
-
-    # these keys are meant for the zones argument in the region info.  We
-    # insert them into zone_info with a different format and then remove them
-    # in the fill_in_endpoints() method
-    for key in ['rgw log meta', 'rgw log data']:
-        if key in ceph_config:
-            zone_info[key] = ceph_config[key]
-
-    return region, zone, zone_info
-
-
-def extract_region_info(region, region_info):
-    """
-    Extract region information from the region_info parameter, using get
-    to set default values.
-
-    :param region: name of the region
-    :param region_info: region information (in dictionary form).
-    :returns: dictionary of region information set from region_info, using
-            default values for missing fields.
-    """
-    assert isinstance(region_info['zones'], list) and region_info['zones'], \
-        'zones must be a non-empty list'
-    return dict(
-        name=region,
-        api_name=region_info.get('api name', region),
-        is_master=region_info.get('is master', False),
-        log_meta=region_info.get('log meta', False),
-        log_data=region_info.get('log data', False),
-        master_zone=region_info.get('master zone', region_info['zones'][0]),
-        placement_targets=region_info.get('placement targets',
-                                          [{'name': 'default_placement',
-                                            'tags': []}]),
-        default_placement=region_info.get('default placement',
-                                          'default_placement'),
-        )
 
 
 def assign_ports(ctx, config):
@@ -724,6 +623,12 @@ def configure_multisite_regions_and_zones(ctx, config, regions, role_endpoints, 
     log.debug('regions are %r', regions)
     log.debug('role_endpoints = %r', role_endpoints)
     log.debug('realm is %r', realm)
+
+    # see what the client and c_config are in configure_regions_and_zones
+    for client, c_config in config.iteritems():
+        log.debug('client in configure_regions_and_zones is %r', client)
+        log.debug('c_config in configure_regions_and_zones is %r', c_config)
+
     # extract the zone info
     role_zones = dict([(client, extract_zone_info(ctx, client, c_config))
                        for client, c_config in config.iteritems()])
@@ -1034,6 +939,12 @@ def pull_configuration(ctx, config, regions, role_endpoints, realm, master_clien
     yield
 
 @contextlib.contextmanager
+def wait_for_master():
+    log.debug("wait_for_master")
+    time.sleep(20)
+    yield
+
+@contextlib.contextmanager
 def task(ctx, config):
     """
     Either use configure apache to run a rados gateway, or use the built-in
@@ -1177,6 +1088,7 @@ def task(ctx, config):
     elif isinstance(config, list):
         config = dict((name, None) for name in config)
 
+    log.debug("ALI ADDED config in the beginning of rgw.py is: %r", config)
     overrides = ctx.config.get('overrides', {})
     teuthology.deep_merge(config, overrides.get('rgw', {}))
 
@@ -1184,6 +1096,7 @@ def task(ctx, config):
     if 'regions' in config:
         # separate region info so only clients are keys in config
         regions = config['regions']
+        del config['regions']
 
     role_endpoints = assign_ports(ctx, config)
     ctx.rgw = argparse.Namespace()
@@ -1260,6 +1173,8 @@ def task(ctx, config):
                 break
 
     log.debug('multi_cluster %s', multi_cluster)
+    log.debug("ALI ADDED config in rgw.py going into get_config_master_client is: %r", config)
+    ctx.rgw.config = config
     master_client = None
 
     if multi_cluster:
@@ -1306,6 +1221,7 @@ def task(ctx, config):
         else:
             raise ValueError("frontend must be 'apache' or 'civetweb'")
 
+        subtasks.extend([lambda: wait_for_master(),])
         subtasks.extend([
             lambda: pull_configuration(ctx=ctx,
                                        config=config,

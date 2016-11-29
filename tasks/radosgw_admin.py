@@ -63,7 +63,6 @@ def get_acl(key):
         remove_newlines(raw_acl)
     )
 
-
 def task(ctx, config):
     """
     Test radosgw-admin functionality against a running rgw instance.
@@ -74,10 +73,13 @@ def task(ctx, config):
         or isinstance(config, dict), \
         "task s3tests only supports a list or dictionary for configuration"
 
-    log.debug('ALI ADDED, Config is: %r', config)
-    # ctx.rgw.regions set in the rgw task
+    # regions found just like in the rgw task
+    config = ctx.rgw.config
     regions = ctx.rgw.regions
+
+    log.debug('ALI ADDED, config is: %r', config)
     log.debug('ALI ADDED, regions are: %r', regions)
+
     if len(regions) > 1:
         multi_region_run = True
 
@@ -88,6 +90,7 @@ def task(ctx, config):
     # the role_endpoints that were assigned by the rgw task
     (remote_host, remote_port) = ctx.rgw.role_endpoints[client]
 
+    realm = None
     realm = ctx.rgw.realm
     log.debug('radosgw-admin: realm %r', realm)
     
@@ -903,6 +906,8 @@ def task(ctx, config):
     time.sleep(15)
 
     (err, out) = rgwadmin(ctx, client, ['gc', 'list'])
+
+    log.debug("ALI DEBUG: out from gc list is: %r", out)
 
     assert len(out) > 0
 

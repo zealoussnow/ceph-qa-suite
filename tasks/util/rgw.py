@@ -2,7 +2,6 @@ from cStringIO import StringIO
 import logging
 import json
 import requests
-from requests.packages.urllib3.util import Retry
 from urlparse import urlparse
 
 from teuthology.orchestra.connection import split_user
@@ -144,21 +143,13 @@ def radosgw_data_log_window(ctx, client):
 
 def radosgw_agent_sync_data(ctx, agent_host, agent_port, full=False):
     log.info('sync agent {h}:{p}'.format(h=agent_host, p=agent_port))
-    # use retry with backoff to tolerate slow startup of radosgw-agent
-    s = requests.Session()
-    s.mount('http://{addr}:{port}/'.format(addr = agent_host, port = agent_port),
-            requests.adapters.HTTPAdapter(max_retries=Retry(total=5, backoff_factor=1)))
     method = "full" if full else "incremental"
-    return s.post('http://{addr}:{port}/data/{method}'.format(addr = agent_host, port = agent_port, method = method))
+    return requests.post('http://{addr}:{port}/data/{method}'.format(addr = agent_host, port = agent_port, method = method))
 
 def radosgw_agent_sync_metadata(ctx, agent_host, agent_port, full=False):
     log.info('sync agent {h}:{p}'.format(h=agent_host, p=agent_port))
-    # use retry with backoff to tolerate slow startup of radosgw-agent
-    s = requests.Session()
-    s.mount('http://{addr}:{port}/'.format(addr = agent_host, port = agent_port),
-            requests.adapters.HTTPAdapter(max_retries=Retry(total=5, backoff_factor=1)))
     method = "full" if full else "incremental"
-    return s.post('http://{addr}:{port}/metadata/{method}'.format(addr = agent_host, port = agent_port, method = method))
+    return requests.post('http://{addr}:{port}/metadata/{method}'.format(addr = agent_host, port = agent_port, method = method))
 
 def radosgw_agent_sync_all(ctx, full=False, data=False):
     if ctx.radosgw_agent.procs:
@@ -185,7 +176,104 @@ def get_sync_agent(ctx, source):
                 return host_for_role(ctx, source), conf.get('port', 8000)
     return None, None
 
+def extract_zone_info(ctx, client, client_config):
+    """
+    Get zone information.
+    :param client: dictionary of client information
+    :param client_config: dictionary of client configuration information
+    :returns: zone extracted from client and client_config information
+    """
+    log.debug('ALI DEBUG STATEMENT: client in extract_zone_info is: %r', client)
+    cluster_name, daemon_type, client_id = teuthology.split_role(client)
+    client_with_id = daemon_type + '.' + client_id
+    ceph_config = ctx.ceph[cluster_name].conf.get('global', {})
+    log.debug('ALI DEBUG STATEMENT: ceph_config in extract_zone_info is: %r', ceph_config)
+    ceph_config.update(ctx.ceph[cluster_name].conf.get('client', {}))
+    log.debug('ALI DEBUG STATEMENT: ceph_config after `client` update in extract_zone_info is: %r', ceph_config)
+    ceph_config.update(ctx.ceph[cluster_name].conf.get(client_with_id, {}))
+    log.debug('ALI DEBUG STATEMENT: ceph_config after client_with_id update in extract_zone_info is: %r', ceph_config)
+    for key in ['rgw zone', 'rgw region', 'rgw zone root pool']:
+        assert key in ceph_config, \
+            'ceph conf must contain {key} for {client}'.format(key=key,
+                                                               client=client)
+    region = ceph_config['rgw region']
+    zone = ceph_config['rgw zone']
+    zone_info = dict()
+    for key in ['rgw control pool', 'rgw gc pool', 'rgw log pool',
+                'rgw intent log pool', 'rgw usage log pool',
+                'rgw user keys pool', 'rgw user email pool',
+                'rgw user swift pool', 'rgw user uid pool',
+                'rgw domain root']:
+        new_key = key.split(' ', 1)[1]
+        new_key = new_key.replace(' ', '_')
+
+        if key in ceph_config:
+            value = ceph_config[key]
+            log.debug('{key} specified in ceph_config ({val})'.format(
+                key=key, val=value))
+            zone_info[new_key] = value
+        else:
+            zone_info[new_key] = '.' + region + '.' + zone + '.' + new_key
+
+    index_pool = '.' + region + '.' + zone + '.' + 'index_pool'
+    data_pool = '.' + region + '.' + zone + '.' + 'data_pool'
+    data_extra_pool = '.' + region + '.' + zone + '.' + 'data_extra_pool'
+
+    zone_info['placement_pools'] = [{'key': 'default_placement',
+                                     'val': {'index_pool': index_pool,
+                                             'data_pool': data_pool,
+                                             'data_extra_pool': data_extra_pool}
+                                     }]
+
+    # these keys are meant for the zones argument in the region info.  We
+    # insert them into zone_info with a different format and then remove them
+    # in the fill_in_endpoints() method
+    for key in ['rgw log meta', 'rgw log data']:
+        if key in ceph_config:
+            zone_info[key] = ceph_config[key]
+
+    # these keys are meant for the zones argument in the region info.  We
+    # insert them into zone_info with a different format and then remove them
+    # in the fill_in_endpoints() method
+    for key in ['rgw log meta', 'rgw log data']:
+        if key in ceph_config:
+            zone_info[key] = ceph_config[key]
+
+    return region, zone, zone_info
+
+
+def extract_region_info(region, region_info):
+    """
+    Extract region information from the region_info parameter, using get
+    to set default values.
+
+    :param region: name of the region
+    :param region_info: region information (in dictionary form).
+    :returns: dictionary of region information set from region_info, using
+            default values for missing fields.
+    """
+    assert isinstance(region_info['zones'], list) and region_info['zones'], \
+        'zones must be a non-empty list'
+    return dict(
+        name=region,
+        api_name=region_info.get('api name', region),
+        is_master=region_info.get('is master', False),
+        log_meta=region_info.get('log meta', False),
+        log_data=region_info.get('log data', False),
+        master_zone=region_info.get('master zone', region_info['zones'][0]),
+        placement_targets=region_info.get('placement targets',
+                                          [{'name': 'default_placement',
+                                            'tags': []}]),
+        default_placement=region_info.get('default placement',
+                                          'default_placement'),
+        )
+
+
 def get_config_master_client(ctx, config, regions):
+    log.debug('ALI DEBUG STATEMENT: config in get_config_master_client is: %r', config)
+    for client, c_config in config.iteritems():
+        log.debug('ALI DEBUG STATEMENT: c_config in loop through config is: %r', c_config)
+        log.debug('ALI DEBUG STATEMENT: client in loop through config is: %r', client)
 
     role_zones = dict([(client, extract_zone_info(ctx, client, c_config))
                        for client, c_config in config.iteritems()])
@@ -207,4 +295,3 @@ def get_config_master_client(ctx, config, regions):
             return client
 
     return None
-
