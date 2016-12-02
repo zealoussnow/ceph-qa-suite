@@ -5,6 +5,11 @@ meta:
 workload2:
   full_sequential:
   - rados:
+      erasure_code_profile:
+        name: teuthologyprofile2
+        k: 2
+        m: 1
+        ruleset-failure-domain: osd
       clients: [client.0]
       ops: 4000
       objects: 50
