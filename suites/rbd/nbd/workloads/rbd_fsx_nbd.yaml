@@ -1,5 +1,9 @@
 os_type: ubuntu
 overrides:
+  ceph:
+    conf:
+      osd:
+        debug objclass: 20
   install:
     ceph:
       extra_packages: [rbd-nbd]
